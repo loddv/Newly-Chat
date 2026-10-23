@@ -69,4 +69,11 @@ class SecurePreferences(context: Context) {
     fun setActiveProvider(provider: AiProviderType) {
         preferences.edit().putString("active_provider", provider.name).apply()
     }
+
+    fun selectedModel(provider: AiProviderType): String =
+        preferences.getString("model_${provider.name}", null) ?: provider.model
+
+    fun setSelectedModel(provider: AiProviderType, model: String) {
+        preferences.edit().putString("model_${provider.name}", model).apply()
+    }
 }
