@@ -4,6 +4,8 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -63,6 +65,14 @@ interface ProviderApi {
 class ProviderFactory {
     private val api = Retrofit.Builder()
         .baseUrl("https://api.anthropic.com/")
+        .client(
+            OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .callTimeout(150, TimeUnit.SECONDS)
+                .build()
+        )
         .addConverterFactory(GsonConverterFactory.create())
         .build()
         .create(ProviderApi::class.java)
