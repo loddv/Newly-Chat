@@ -64,7 +64,7 @@ class SecurePreferences(context: Context) {
     }
 
     fun activeProvider(): AiProviderType? =
-        preferences.getString("active_provider", null)?.let(AiProviderType::valueOf)
+        preferences.getString("active_provider", null)?.let { AiProviderType.valueOf(it) }
 
     fun setActiveProvider(provider: AiProviderType) {
         preferences.edit().putString("active_provider", provider.name).apply()
