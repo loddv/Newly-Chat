@@ -24,7 +24,7 @@ data class ChatUiState(
     val model: String = AiProviderType.CLAUDE.model,
     val configuredProviders: Set<AiProviderType> = emptySet(),
     val isLoading: Boolean = false,
-    val error: String? = null,
+    val error: ErrorNotification? = null,
     val inputTokens: Int = 0,
     val outputTokens: Int = 0,
     val availableModels: List<String> = emptyList(),
@@ -37,8 +37,16 @@ class ChatViewModel(
     private val preferences: SecurePreferences,
     private val providers: ProviderFactory
 ) : ViewModel() {
+    private data class FailedMessage(
+        val content: String,
+        val provider: AiProviderType,
+        val model: String,
+        val requestMessages: List<ProviderMessage>
+    )
+
     private val conversationId = "default"
     private var modelsJob: Job? = null
+    private var failedMessage: FailedMessage? = null
     private val initialProvider = preferences.activeProvider() ?: AiProviderType.CLAUDE
     private val _uiState = MutableStateFlow(
         ChatUiState(
@@ -63,6 +71,7 @@ class ChatViewModel(
     }
 
     fun selectProvider(provider: AiProviderType) {
+        failedMessage = null
         preferences.setActiveProvider(provider)
         _uiState.update {
             it.copy(
@@ -95,7 +104,10 @@ class ChatViewModel(
                 it.copy(
                     availableModels = emptyList(),
                     showModelSelector = false,
-                    error = "Adicione uma API key para ${provider.label} em Configurações."
+                    error = ErrorNotification(
+                        "Adicione uma API key para ${provider.label} em Configurações.",
+                        ErrorAction.OPEN_SETTINGS
+                    )
                 )
             }
             return
@@ -109,8 +121,18 @@ class ChatViewModel(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
+                val notification = error.toErrorNotification()
                 _uiState.update {
-                    it.copy(error = "Erro ao carregar modelos: ${error.message}", showModelSelector = false)
+                    it.copy(
+                        error = notification.copy(
+                            action = if (notification.action == ErrorAction.RETRY) {
+                                ErrorAction.RETRY_MODELS
+                            } else {
+                                notification.action
+                            }
+                        ),
+                        showModelSelector = false
+                    )
                 }
             } finally {
                 _uiState.update { it.copy(isLoadingModels = false) }
@@ -125,43 +147,105 @@ class ChatViewModel(
         val model = _uiState.value.model
         val key = preferences.getApiKey(providerType)
         if (key.isNullOrBlank()) {
-            _uiState.update { it.copy(error = "Adicione uma API key para ${providerType.label} em Configurações.") }
+            _uiState.update {
+                it.copy(
+                    error = ErrorNotification(
+                        "Adicione uma API key para ${providerType.label} em Configurações.",
+                        ErrorAction.OPEN_SETTINGS
+                    )
+                )
+            }
             return
         }
 
+        failedMessage = null
+        viewModelScope.launch { submitMessage(content, providerType, model, key, addUserMessage = true) }
+    }
+
+    fun retryFailedMessage() {
+        if (_uiState.value.isLoading) return
+        val failed = failedMessage ?: return
+        val key = preferences.getApiKey(failed.provider)
+        if (key.isNullOrBlank()) {
+            _uiState.update {
+                it.copy(
+                    error = ErrorNotification(
+                        "Adicione uma API key para ${failed.provider.label} em Configurações.",
+                        ErrorAction.OPEN_SETTINGS
+                    )
+                )
+            }
+            return
+        }
+        failedMessage = null
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
-            try {
-                val history = _uiState.value.messages.map { ProviderMessage(it.role, it.content) }
-                val userMessage = ChatMessage(
-                    UUID.randomUUID().toString(), conversationId, "user", content,
-                    System.currentTimeMillis(), providerType.name, model
-                )
-                messages.insert(userMessage)
-                val response = providers.create(providerType).sendMessage(
-                    history + ProviderMessage("user", content),
-                    key,
-                    model,
-                    preferences.getTemperature(),
-                    preferences.getMaxTokens()
-                )
+            submitMessage(
+                failed.content,
+                failed.provider,
+                failed.model,
+                key,
+                addUserMessage = false,
+                retryMessages = failed.requestMessages
+            )
+        }
+    }
+
+    fun retryModelLoading() {
+        if (_uiState.value.isLoadingModels) return
+        _uiState.update { it.copy(showModelSelector = true) }
+        loadModels()
+    }
+
+    private suspend fun submitMessage(
+        content: String,
+        providerType: AiProviderType,
+        model: String,
+        key: String,
+        addUserMessage: Boolean,
+        retryMessages: List<ProviderMessage>? = null
+    ) {
+        _uiState.update { it.copy(isLoading = true, error = null) }
+        var requestMessages = retryMessages.orEmpty()
+        try {
+            if (addUserMessage) {
+                requestMessages = _uiState.value.messages.map { ProviderMessage(it.role, it.content) } +
+                    ProviderMessage("user", content)
                 messages.insert(
                     ChatMessage(
-                        UUID.randomUUID().toString(), conversationId, "assistant", response.content,
-                        System.currentTimeMillis(), providerType.name, response.model
+                        UUID.randomUUID().toString(), conversationId, "user", content,
+                        System.currentTimeMillis(), providerType.name, model
                     )
                 )
-                _uiState.update {
-                    it.copy(
-                        inputTokens = it.inputTokens + response.inputTokens,
-                        outputTokens = it.outputTokens + response.outputTokens
-                    )
-                }
-            } catch (error: Exception) {
-                _uiState.update { it.copy(error = error.message ?: "Unable to send message.") }
-            } finally {
-                _uiState.update { it.copy(isLoading = false) }
             }
+            val response = providers.create(providerType).sendMessage(
+                requestMessages,
+                key,
+                model,
+                preferences.getTemperature(),
+                preferences.getMaxTokens()
+            )
+            messages.insert(
+                ChatMessage(
+                    UUID.randomUUID().toString(), conversationId, "assistant", response.content,
+                    System.currentTimeMillis(), providerType.name, response.model
+                )
+            )
+            _uiState.update {
+                it.copy(
+                    inputTokens = it.inputTokens + response.inputTokens,
+                    outputTokens = it.outputTokens + response.outputTokens
+                )
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            val notification = error.toErrorNotification()
+            if (notification.action == ErrorAction.RETRY) {
+                failedMessage = FailedMessage(content, providerType, model, requestMessages)
+            }
+            _uiState.update { it.copy(error = notification) }
+        } finally {
+            _uiState.update { it.copy(isLoading = false) }
         }
     }
 

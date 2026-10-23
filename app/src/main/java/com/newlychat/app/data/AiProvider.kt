@@ -2,8 +2,10 @@ package com.newlychat.app.data
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import retrofit2.Response
@@ -62,6 +64,27 @@ interface ProviderApi {
     ): Response<JsonObject>
 }
 
+class ProviderApiException(
+    val httpStatus: Int,
+    val provider: AiProviderType,
+    val apiCode: String?,
+    val apiStatus: String?
+) : IOException("Request to ${provider.label} failed with HTTP $httpStatus") {
+    companion object {
+        fun fromResponse(type: AiProviderType, statusCode: Int, responseBody: String?): ProviderApiException {
+            val error = runCatching {
+                responseBody?.let { JsonParser.parseString(it).asJsonObject.getAsJsonObject("error") }
+            }.getOrNull()
+            return ProviderApiException(
+                httpStatus = statusCode,
+                provider = type,
+                apiCode = error?.get("code")?.toString()?.trim('"'),
+                apiStatus = error?.get("status")?.asString
+            )
+        }
+    }
+}
+
 class ProviderFactory {
     private val api = Retrofit.Builder()
         .baseUrl("https://api.anthropic.com/")
@@ -98,7 +121,8 @@ class ProviderFactory {
                 put("limit", "1000")
                 cursor?.let { put("after_id", it) }
             }
-            val response = api.get("https://api.anthropic.com/v1/models", headers, query).bodyOrThrow()
+            val response = api.get("https://api.anthropic.com/v1/models", headers, query)
+                .bodyOrThrow(AiProviderType.CLAUDE)
             val page = response.getAsJsonArray("data") ?: JsonArray()
             models += page.mapNotNull { item ->
                 val model = item.asJsonObject
@@ -119,7 +143,7 @@ class ProviderFactory {
             "https://api.openai.com/v1/models",
             mapOf("Authorization" to "Bearer $apiKey"),
             emptyMap()
-        ).bodyOrThrow()
+        ).bodyOrThrow(AiProviderType.OPENAI)
         return (response.getAsJsonArray("data") ?: JsonArray()).mapNotNull { item ->
             item.asJsonObject.get("id")?.asString?.takeIf(::isChatModel)
         }.distinct().sorted()
@@ -138,7 +162,7 @@ class ProviderFactory {
                 "https://generativelanguage.googleapis.com/v1beta/models",
                 headers,
                 query
-            ).bodyOrThrow()
+            ).bodyOrThrow(AiProviderType.GEMINI)
             response.getAsJsonArray("models")?.forEach { item ->
                 val model = item.asJsonObject
                 val supportsChat = model.getAsJsonArray("supportedGenerationMethods")
@@ -157,7 +181,7 @@ class ProviderFactory {
             "https://api.mistral.ai/v1/models",
             mapOf("Authorization" to "Bearer $apiKey"),
             emptyMap()
-        ).bodyOrThrow()
+        ).bodyOrThrow(AiProviderType.MISTRAL)
         return (response.getAsJsonArray("data") ?: JsonArray()).mapNotNull { item ->
             val model = item.asJsonObject
             val supportsChat = model.getAsJsonObject("capabilities")
@@ -175,10 +199,9 @@ class ProviderFactory {
         return looksLikeChatModel && nonChatTerms.none(lowerId::contains)
     }
 
-    private fun Response<JsonObject>.bodyOrThrow(): JsonObject {
+    private fun Response<JsonObject>.bodyOrThrow(type: AiProviderType): JsonObject {
         if (!isSuccessful) {
-            val message = errorBody()?.string()?.take(500)
-            throw IllegalStateException(message ?: "Unable to load models (${code()})")
+            throw ProviderApiException.fromResponse(type, code(), errorBody()?.string())
         }
         return body() ?: throw IllegalStateException("Empty response while loading models.")
     }
@@ -198,8 +221,7 @@ private class HttpAiProvider(
         val (url, headers, body) = request(messages, apiKey, model, temperature, maxTokens)
         val response = api.post(url, headers, body)
         if (!response.isSuccessful) {
-            val message = response.errorBody()?.string()?.take(500)
-            throw IllegalStateException(message ?: "Provider request failed (${response.code()})")
+            throw ProviderApiException.fromResponse(type, response.code(), response.errorBody()?.string())
         }
         val json = response.body() ?: throw IllegalStateException("Empty response from ${type.label}")
         parseResponse(json, model)

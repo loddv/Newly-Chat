@@ -175,8 +175,42 @@ private fun ChatScreen(viewModel: ChatViewModel, settingsViewModel: SettingsView
                     }
                 }
                 state.error?.let { error ->
-                    Text(error, color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = viewModel::clearError) { Text("Dismiss") }
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = androidx.compose.material3.CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                            Text(
+                                error.message,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                error.action?.let { action ->
+                                    TextButton(
+                                        onClick = {
+                                            viewModel.clearError()
+                                            when (action) {
+                                                ErrorAction.RETRY -> viewModel.retryFailedMessage()
+                                                ErrorAction.RETRY_MODELS -> viewModel.retryModelLoading()
+                                                ErrorAction.OPEN_SETTINGS -> showSettings = true
+                                            }
+                                        }
+                                    ) {
+                                        Text(
+                                            when (action) {
+                                                ErrorAction.RETRY -> "Tentar novamente"
+                                                ErrorAction.RETRY_MODELS -> "Tentar carregar modelos"
+                                                ErrorAction.OPEN_SETTINGS -> "Abrir configurações"
+                                            }
+                                        )
+                                    }
+                                }
+                                TextButton(onClick = viewModel::clearError) { Text("Fechar") }
+                            }
+                        }
+                    }
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
@@ -359,7 +393,7 @@ private fun ProviderCard(
     models: List<String>,
     selectedModel: String,
     isLoadingModels: Boolean,
-    modelError: String?,
+    modelError: ErrorNotification?,
     onApiKeyChange: (String) -> Unit,
     onSave: () -> Unit,
     onDelete: () -> Unit,
@@ -451,7 +485,12 @@ private fun ProviderCard(
                     }
                 }
                 modelError?.let { error ->
-                    Text(error, color = MaterialTheme.colorScheme.error)
+                    Column {
+                        Text(error.message, color = MaterialTheme.colorScheme.error)
+                        if (error.action == ErrorAction.RETRY) {
+                            TextButton(onClick = onLoadModels) { Text("Tentar carregar novamente") }
+                        }
+                    }
                 }
             }
         }
