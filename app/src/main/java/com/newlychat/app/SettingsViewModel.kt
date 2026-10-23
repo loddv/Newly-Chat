@@ -18,7 +18,7 @@ data class SettingsUiState(
     val availableModels: Map<AiProviderType, List<String>> = emptyMap(),
     val selectedModels: Map<AiProviderType, String> = emptyMap(),
     val loadingModels: Set<AiProviderType> = emptySet(),
-    val modelErrors: Map<AiProviderType, String> = emptyMap(),
+    val modelErrors: Map<AiProviderType, ErrorNotification> = emptyMap(),
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val temperature: Double = SecurePreferences.DEFAULT_TEMPERATURE,
     val maxTokens: Int = SecurePreferences.DEFAULT_MAX_TOKENS
@@ -91,7 +91,11 @@ class SettingsViewModel(
         val apiKey = preferences.getApiKey(provider)
         if (apiKey.isNullOrBlank()) {
             _uiState.update { state ->
-                state.copy(modelErrors = state.modelErrors + (provider to "Configure uma API key antes de buscar modelos."))
+                state.copy(
+                    modelErrors = state.modelErrors + (
+                        provider to ErrorNotification("Configure uma API key antes de buscar modelos.")
+                    )
+                )
             }
             return
         }
@@ -112,12 +116,12 @@ class SettingsViewModel(
                 _uiState.update { state ->
                     state.copy(availableModels = state.availableModels + (provider to models))
                 }
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
             } catch (error: Exception) {
                 _uiState.update { state ->
                     state.copy(
-                        modelErrors = state.modelErrors + (
-                            provider to (error.message ?: "Não foi possível carregar os modelos.")
-                        )
+                        modelErrors = state.modelErrors + (provider to error.toErrorNotification())
                     )
                 }
             } finally {
@@ -131,7 +135,11 @@ class SettingsViewModel(
     fun selectModel(provider: AiProviderType, model: String) {
         if (model !in _uiState.value.availableModels[provider].orEmpty()) {
             _uiState.update { state ->
-                state.copy(modelErrors = state.modelErrors + (provider to "Selecione um modelo disponível."))
+                state.copy(
+                    modelErrors = state.modelErrors + (
+                        provider to ErrorNotification("Selecione um modelo disponível.")
+                    )
+                )
             }
             return
         }
