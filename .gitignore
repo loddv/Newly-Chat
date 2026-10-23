@@ -1,4 +1,8 @@
 # Build and Release Folders
+/.gradle/
+/local.properties
+/build/
+/app/build/
 bin-debug/
 bin-release/
 [Oo]bj/

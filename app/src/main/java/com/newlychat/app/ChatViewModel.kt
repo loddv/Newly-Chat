@@ -1,0 +1,113 @@
+package com.newlychat.app
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.newlychat.app.data.AiProviderType
+import com.newlychat.app.data.ChatMessage
+import com.newlychat.app.data.MessageDao
+import com.newlychat.app.data.ProviderFactory
+import com.newlychat.app.data.ProviderMessage
+import com.newlychat.app.data.SecurePreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import java.util.UUID
+
+data class ChatUiState(
+    val messages: List<ChatMessage> = emptyList(),
+    val provider: AiProviderType = AiProviderType.CLAUDE,
+    val configuredProviders: Set<AiProviderType> = emptySet(),
+    val isLoading: Boolean = false,
+    val error: String? = null,
+    val inputTokens: Int = 0,
+    val outputTokens: Int = 0
+)
+
+class ChatViewModel(
+    private val messages: MessageDao,
+    private val preferences: SecurePreferences,
+    private val providers: ProviderFactory
+) : ViewModel() {
+    private val conversationId = "default"
+    private val _uiState = MutableStateFlow(
+        ChatUiState(provider = preferences.activeProvider() ?: AiProviderType.CLAUDE)
+    )
+    val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            messages.observeMessages(conversationId).collect { rows ->
+                _uiState.update { it.copy(messages = rows) }
+            }
+        }
+        refreshConfiguredProviders()
+    }
+
+    fun saveApiKey(provider: AiProviderType, apiKey: String) {
+        if (apiKey.isBlank()) preferences.deleteApiKey(provider) else preferences.saveApiKey(provider, apiKey)
+        refreshConfiguredProviders()
+    }
+
+    fun selectProvider(provider: AiProviderType) {
+        preferences.setActiveProvider(provider)
+        _uiState.update { it.copy(provider = provider, error = null) }
+    }
+
+    fun sendMessage(text: String) {
+        val content = text.trim()
+        if (content.isEmpty() || _uiState.value.isLoading) return
+        val providerType = _uiState.value.provider
+        val key = preferences.getApiKey(providerType)
+        if (key.isNullOrBlank()) {
+            _uiState.update { it.copy(error = "Add an API key for ${providerType.label} in Providers.") }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null) }
+            try {
+                val history = _uiState.value.messages.map { ProviderMessage(it.role, it.content) }
+                val userMessage = ChatMessage(
+                    UUID.randomUUID().toString(), conversationId, "user", content,
+                    System.currentTimeMillis(), providerType.name, providerType.model
+                )
+                messages.insert(userMessage)
+                val response = providers.create(providerType).sendMessage(
+                    history + ProviderMessage("user", content),
+                    key
+                )
+                messages.insert(
+                    ChatMessage(
+                        UUID.randomUUID().toString(), conversationId, "assistant", response.content,
+                        System.currentTimeMillis(), providerType.name, response.model
+                    )
+                )
+                _uiState.update {
+                    it.copy(
+                        inputTokens = it.inputTokens + response.inputTokens,
+                        outputTokens = it.outputTokens + response.outputTokens
+                    )
+                }
+            } catch (error: Exception) {
+                _uiState.update { it.copy(error = error.message ?: "Unable to send message.") }
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
+            }
+        }
+    }
+
+    fun clearError() {
+        _uiState.update { it.copy(error = null) }
+    }
+
+    private fun refreshConfiguredProviders() {
+        _uiState.update {
+            it.copy(configuredProviders = AiProviderType.values().filterTo(mutableSetOf()) {
+                !preferences.getApiKey(it).isNullOrBlank()
+            })
+        }
+    }
+}
