@@ -86,7 +86,7 @@ private class HttpAiProvider(
                 "https://api.anthropic.com/v1/messages"
             }
             AiProviderType.OPENAI, AiProviderType.MISTRAL -> {
-                headers["Authorization"] = "B" + "earer $apiKey"
+                headers["Authorization"] = "Bearer " + apiKey
                 body.addProperty("model", type.model)
                 body.addProperty("max_tokens", 2048)
                 body.add("messages", messages.asJsonArray())
