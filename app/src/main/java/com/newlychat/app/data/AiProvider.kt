@@ -150,7 +150,7 @@ private class HttpAiProvider(
 }
 
 private fun List<ProviderMessage>.asJsonArray(): JsonArray = JsonArray().apply {
-    forEach { message ->
+    this@asJsonArray.forEach { message ->
         add(JsonObject().apply {
             addProperty("role", message.role)
             addProperty("content", message.content)
