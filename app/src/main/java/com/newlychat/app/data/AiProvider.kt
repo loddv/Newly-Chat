@@ -8,8 +8,10 @@ import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.HeaderMap
 import retrofit2.http.POST
+import retrofit2.http.QueryMap
 import retrofit2.http.Url
 
 enum class AiProviderType(val label: String, val keyName: String, val model: String) {
@@ -33,7 +35,7 @@ data class AiResponse(
 
 interface AiProvider {
     val type: AiProviderType
-    suspend fun sendMessage(messages: List<ProviderMessage>, apiKey: String): AiResponse
+    suspend fun sendMessage(messages: List<ProviderMessage>, apiKey: String, model: String): AiResponse
 }
 
 interface ProviderApi {
@@ -42,6 +44,13 @@ interface ProviderApi {
         @Url url: String,
         @HeaderMap headers: Map<String, String>,
         @Body body: JsonObject
+    ): Response<JsonObject>
+
+    @GET
+    suspend fun get(
+        @Url url: String,
+        @HeaderMap headers: Map<String, String>,
+        @QueryMap query: Map<String, String>
     ): Response<JsonObject>
 }
 
@@ -53,6 +62,110 @@ class ProviderFactory {
         .create(ProviderApi::class.java)
 
     fun create(type: AiProviderType): AiProvider = HttpAiProvider(type, api)
+
+    suspend fun listModels(type: AiProviderType, apiKey: String): List<String> =
+        withContext(Dispatchers.IO) {
+            when (type) {
+                AiProviderType.CLAUDE -> listClaudeModels(apiKey)
+                AiProviderType.OPENAI -> listOpenAiModels(apiKey)
+                AiProviderType.GEMINI -> listGeminiModels(apiKey)
+                AiProviderType.MISTRAL -> listMistralModels(apiKey)
+            }
+        }
+
+    private suspend fun listClaudeModels(apiKey: String): List<String> {
+        val headers = mapOf("x-api-key" to apiKey, "anthropic-version" to "2023-06-01")
+        val models = mutableListOf<String>()
+        var cursor: String? = null
+        do {
+            val query = buildMap {
+                put("limit", "1000")
+                cursor?.let { put("after_id", it) }
+            }
+            val response = api.get("https://api.anthropic.com/v1/models", headers, query).bodyOrThrow()
+            val page = response.getAsJsonArray("data") ?: JsonArray()
+            models += page.mapNotNull { item ->
+                val model = item.asJsonObject
+                val lifecycle = model.get("lifecycle")?.asString
+                model.get("id")?.asString?.takeIf { lifecycle == null || lifecycle == "active" }
+            }
+            cursor = if (response.get("has_more")?.asBoolean == true) {
+                response.get("last_id")?.asString ?: page.lastOrNull()?.asJsonObject?.get("id")?.asString
+            } else {
+                null
+            }
+        } while (cursor != null)
+        return models.distinct().sorted()
+    }
+
+    private suspend fun listOpenAiModels(apiKey: String): List<String> {
+        val response = api.get(
+            "https://api.openai.com/v1/models",
+            mapOf("Authorization" to "Bearer $apiKey"),
+            emptyMap()
+        ).bodyOrThrow()
+        return (response.getAsJsonArray("data") ?: JsonArray()).mapNotNull { item ->
+            item.asJsonObject.get("id")?.asString?.takeIf(::isChatModel)
+        }.distinct().sorted()
+    }
+
+    private suspend fun listGeminiModels(apiKey: String): List<String> {
+        val headers = mapOf("x-goog-api-key" to apiKey)
+        val models = mutableListOf<String>()
+        var pageToken: String? = null
+        do {
+            val query = buildMap {
+                put("pageSize", "1000")
+                pageToken?.let { put("pageToken", it) }
+            }
+            val response = api.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                headers,
+                query
+            ).bodyOrThrow()
+            response.getAsJsonArray("models")?.forEach { item ->
+                val model = item.asJsonObject
+                val supportsChat = model.getAsJsonArray("supportedGenerationMethods")
+                    ?.any { it.asString == "generateContent" } == true
+                if (supportsChat) {
+                    model.get("name")?.asString?.removePrefix("models/")?.let(models::add)
+                }
+            }
+            pageToken = response.get("nextPageToken")?.asString?.takeIf { it.isNotBlank() }
+        } while (pageToken != null)
+        return models.distinct().sorted()
+    }
+
+    private suspend fun listMistralModels(apiKey: String): List<String> {
+        val response = api.get(
+            "https://api.mistral.ai/v1/models",
+            mapOf("Authorization" to "Bearer $apiKey"),
+            emptyMap()
+        ).bodyOrThrow()
+        return (response.getAsJsonArray("data") ?: JsonArray()).mapNotNull { item ->
+            val model = item.asJsonObject
+            val supportsChat = model.getAsJsonObject("capabilities")
+                ?.get("completion_chat")?.asBoolean == true
+            model.get("id")?.asString?.takeIf { supportsChat }
+        }.distinct().sorted()
+    }
+
+    private fun isChatModel(id: String): Boolean {
+        val lowerId = id.lowercase()
+        val looksLikeChatModel = lowerId.startsWith("gpt-") ||
+            listOf("o1", "o3", "o4").any { lowerId == it || lowerId.startsWith("$it-") } ||
+            lowerId == "chatgpt-4o-latest"
+        val nonChatTerms = listOf("audio", "transcribe", "tts", "embedding", "realtime", "moderation")
+        return looksLikeChatModel && nonChatTerms.none(lowerId::contains)
+    }
+
+    private fun Response<JsonObject>.bodyOrThrow(): JsonObject {
+        if (!isSuccessful) {
+            val message = errorBody()?.string()?.take(500)
+            throw IllegalStateException(message ?: "Unable to load models (${code()})")
+        }
+        return body() ?: throw IllegalStateException("Empty response while loading models.")
+    }
 }
 
 private class HttpAiProvider(
@@ -61,34 +174,43 @@ private class HttpAiProvider(
 ) : AiProvider {
     override suspend fun sendMessage(
         messages: List<ProviderMessage>,
-        apiKey: String
+        apiKey: String,
+        model: String
     ): AiResponse = withContext(Dispatchers.IO) {
-        val (url, headers, body) = request(messages, apiKey)
+        val (url, headers, body) = request(messages, apiKey, model)
         val response = api.post(url, headers, body)
         if (!response.isSuccessful) {
             val message = response.errorBody()?.string()?.take(500)
             throw IllegalStateException(message ?: "Provider request failed (${response.code()})")
         }
         val json = response.body() ?: throw IllegalStateException("Empty response from ${type.label}")
-        parseResponse(json)
+        parseResponse(json, model)
     }
 
-    private fun request(messages: List<ProviderMessage>, apiKey: String): Triple<String, Map<String, String>, JsonObject> {
+    private fun request(
+        messages: List<ProviderMessage>,
+        apiKey: String,
+        model: String
+    ): Triple<String, Map<String, String>, JsonObject> {
         val body = JsonObject()
         val headers = mutableMapOf("Content-Type" to "application/json")
         val url = when (type) {
             AiProviderType.CLAUDE -> {
                 headers["x-api-key"] = apiKey
                 headers["anthropic-version"] = "2023-06-01"
-                body.addProperty("model", type.model)
+                body.addProperty("model", model)
                 body.addProperty("max_tokens", 2048)
                 body.add("messages", messages.asJsonArray())
                 "https://api.anthropic.com/v1/messages"
             }
             AiProviderType.OPENAI, AiProviderType.MISTRAL -> {
                 headers["Authorization"] = "Bearer " + apiKey
-                body.addProperty("model", type.model)
-                body.addProperty("max_tokens", 2048)
+                body.addProperty("model", model)
+                if (type == AiProviderType.OPENAI && isReasoningModel(model)) {
+                    body.addProperty("max_completion_tokens", 2048)
+                } else {
+                    body.addProperty("max_tokens", 2048)
+                }
                 body.add("messages", messages.asJsonArray())
                 val base = if (type == AiProviderType.OPENAI) "https://api.openai.com" else "https://api.mistral.ai"
                 "$base/v1/chat/completions"
@@ -105,13 +227,16 @@ private class HttpAiProvider(
                         })
                     }
                 })
-                "https://generativelanguage.googleapis.com/v1beta/models/${type.model}:generateContent"
+                "https://generativelanguage.googleapis.com/v1beta/models/${model.removePrefix("models/")}:generateContent"
             }
         }
         return Triple(url, headers, body)
     }
 
-    private fun parseResponse(json: JsonObject): AiResponse {
+    private fun isReasoningModel(model: String): Boolean =
+        listOf("o1", "o3", "o4").any { model == it || model.startsWith("$it-") }
+
+    private fun parseResponse(json: JsonObject, requestedModel: String): AiResponse {
         val usage = json.getAsJsonObject("usage")
         val content: String
         val model: String
@@ -121,14 +246,14 @@ private class HttpAiProvider(
             AiProviderType.CLAUDE -> {
                 content = json.getAsJsonArray("content")?.firstOrNull()?.asJsonObject
                     ?.get("text")?.asString.orEmpty()
-                model = json.get("model")?.asString ?: type.model
+                model = json.get("model")?.asString ?: requestedModel
                 id = json.get("id")?.asString.orEmpty()
                 finishReason = json.get("stop_reason")?.asString.orEmpty()
             }
             AiProviderType.OPENAI, AiProviderType.MISTRAL -> {
                 val choice = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
                 content = choice?.getAsJsonObject("message")?.get("content")?.asString.orEmpty()
-                model = json.get("model")?.asString ?: type.model
+                model = json.get("model")?.asString ?: requestedModel
                 id = json.get("id")?.asString.orEmpty()
                 finishReason = choice?.get("finish_reason")?.asString.orEmpty()
             }
@@ -136,7 +261,7 @@ private class HttpAiProvider(
                 content = json.getAsJsonArray("candidates")?.firstOrNull()?.asJsonObject
                     ?.getAsJsonObject("content")?.getAsJsonArray("parts")?.firstOrNull()
                     ?.asJsonObject?.get("text")?.asString.orEmpty()
-                model = type.model
+                model = json.get("modelVersion")?.asString ?: requestedModel
                 id = json.get("responseId")?.asString.orEmpty()
                 finishReason = json.getAsJsonArray("candidates")?.firstOrNull()?.asJsonObject
                     ?.get("finishReason")?.asString.orEmpty()

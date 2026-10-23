@@ -19,6 +19,7 @@ import java.util.UUID
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val provider: AiProviderType = AiProviderType.CLAUDE,
+    val model: String = AiProviderType.CLAUDE.model,
     val configuredProviders: Set<AiProviderType> = emptySet(),
     val isLoading: Boolean = false,
     val error: String? = null,
@@ -32,8 +33,12 @@ class ChatViewModel(
     private val providers: ProviderFactory
 ) : ViewModel() {
     private val conversationId = "default"
+    private val initialProvider = preferences.activeProvider() ?: AiProviderType.CLAUDE
     private val _uiState = MutableStateFlow(
-        ChatUiState(provider = preferences.activeProvider() ?: AiProviderType.CLAUDE)
+        ChatUiState(
+            provider = initialProvider,
+            model = preferences.selectedModel(initialProvider)
+        )
     )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
@@ -53,16 +58,29 @@ class ChatViewModel(
 
     fun selectProvider(provider: AiProviderType) {
         preferences.setActiveProvider(provider)
-        _uiState.update { it.copy(provider = provider, error = null) }
+        _uiState.update {
+            it.copy(
+                provider = provider,
+                model = preferences.selectedModel(provider),
+                error = null
+            )
+        }
+    }
+
+    fun selectModel(model: String) {
+        val provider = _uiState.value.provider
+        preferences.setSelectedModel(provider, model)
+        _uiState.update { it.copy(model = model) }
     }
 
     fun sendMessage(text: String) {
         val content = text.trim()
         if (content.isEmpty() || _uiState.value.isLoading) return
         val providerType = _uiState.value.provider
+        val model = _uiState.value.model
         val key = preferences.getApiKey(providerType)
         if (key.isNullOrBlank()) {
-            _uiState.update { it.copy(error = "Add an API key for ${providerType.label} in Providers.") }
+            _uiState.update { it.copy(error = "Adicione uma API key para ${providerType.label} em Configurações.") }
             return
         }
 
@@ -72,12 +90,13 @@ class ChatViewModel(
                 val history = _uiState.value.messages.map { ProviderMessage(it.role, it.content) }
                 val userMessage = ChatMessage(
                     UUID.randomUUID().toString(), conversationId, "user", content,
-                    System.currentTimeMillis(), providerType.name, providerType.model
+                    System.currentTimeMillis(), providerType.name, model
                 )
                 messages.insert(userMessage)
                 val response = providers.create(providerType).sendMessage(
                     history + ProviderMessage("user", content),
-                    key
+                    key,
+                    model
                 )
                 messages.insert(
                     ChatMessage(
@@ -103,11 +122,15 @@ class ChatViewModel(
         _uiState.update { it.copy(error = null) }
     }
 
-    private fun refreshConfiguredProviders() {
+    fun refreshConfiguredProviders() {
+        val provider = _uiState.value.provider
         _uiState.update {
-            it.copy(configuredProviders = AiProviderType.values().filterTo(mutableSetOf()) {
-                !preferences.getApiKey(it).isNullOrBlank()
-            })
+            it.copy(
+                model = preferences.selectedModel(provider),
+                configuredProviders = AiProviderType.values().filterTo(mutableSetOf()) {
+                    !preferences.getApiKey(it).isNullOrBlank()
+                }
+            )
         }
     }
 }
