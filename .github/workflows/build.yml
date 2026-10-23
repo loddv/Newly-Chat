@@ -1,0 +1,39 @@
+name: Build App
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build type"
+        type: choice
+        options: [debug, release]
+        default: debug
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Build
+        run: |
+          TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          if [ "$TYPE" = "release" ]; then
+            gradle :app:assembleRelease
+          else
+            gradle :app:assembleDebug
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ github.event.inputs.build_type || 'debug' }}
+          path: app/build/outputs/apk/**/*.apk
