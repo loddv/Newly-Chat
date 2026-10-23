@@ -35,7 +35,13 @@ data class AiResponse(
 
 interface AiProvider {
     val type: AiProviderType
-    suspend fun sendMessage(messages: List<ProviderMessage>, apiKey: String, model: String): AiResponse
+    suspend fun sendMessage(
+        messages: List<ProviderMessage>,
+        apiKey: String,
+        model: String,
+        temperature: Double = 1.0,
+        maxTokens: Int = 2048
+    ): AiResponse
 }
 
 interface ProviderApi {
@@ -175,9 +181,11 @@ private class HttpAiProvider(
     override suspend fun sendMessage(
         messages: List<ProviderMessage>,
         apiKey: String,
-        model: String
+        model: String,
+        temperature: Double,
+        maxTokens: Int
     ): AiResponse = withContext(Dispatchers.IO) {
-        val (url, headers, body) = request(messages, apiKey, model)
+        val (url, headers, body) = request(messages, apiKey, model, temperature, maxTokens)
         val response = api.post(url, headers, body)
         if (!response.isSuccessful) {
             val message = response.errorBody()?.string()?.take(500)
@@ -190,7 +198,9 @@ private class HttpAiProvider(
     private fun request(
         messages: List<ProviderMessage>,
         apiKey: String,
-        model: String
+        model: String,
+        temperature: Double,
+        maxTokens: Int
     ): Triple<String, Map<String, String>, JsonObject> {
         val body = JsonObject()
         val headers = mutableMapOf("Content-Type" to "application/json")
@@ -199,7 +209,8 @@ private class HttpAiProvider(
                 headers["x-api-key"] = apiKey
                 headers["anthropic-version"] = "2023-06-01"
                 body.addProperty("model", model)
-                body.addProperty("max_tokens", 2048)
+                body.addProperty("max_tokens", maxTokens)
+                body.addProperty("temperature", temperature.coerceIn(0.0, 1.0))
                 body.add("messages", messages.asJsonArray())
                 "https://api.anthropic.com/v1/messages"
             }
@@ -207,9 +218,10 @@ private class HttpAiProvider(
                 headers["Authorization"] = "Bearer " + apiKey
                 body.addProperty("model", model)
                 if (type == AiProviderType.OPENAI && isReasoningModel(model)) {
-                    body.addProperty("max_completion_tokens", 2048)
+                    body.addProperty("max_completion_tokens", maxTokens)
                 } else {
-                    body.addProperty("max_tokens", 2048)
+                    body.addProperty("max_tokens", maxTokens)
+                    body.addProperty("temperature", temperature.coerceIn(0.0, if (type == AiProviderType.MISTRAL) 1.5 else 2.0))
                 }
                 body.add("messages", messages.asJsonArray())
                 val base = if (type == AiProviderType.OPENAI) "https://api.openai.com" else "https://api.mistral.ai"
@@ -226,6 +238,10 @@ private class HttpAiProvider(
                             })
                         })
                     }
+                })
+                body.add("generationConfig", JsonObject().apply {
+                    addProperty("temperature", temperature.coerceIn(0.0, 2.0))
+                    addProperty("maxOutputTokens", maxTokens)
                 })
                 "https://generativelanguage.googleapis.com/v1beta/models/${model.removePrefix("models/")}:generateContent"
             }

@@ -8,6 +8,8 @@ import com.newlychat.app.data.MessageDao
 import com.newlychat.app.data.ProviderFactory
 import com.newlychat.app.data.ProviderMessage
 import com.newlychat.app.data.SecurePreferences
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,7 +26,10 @@ data class ChatUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val inputTokens: Int = 0,
-    val outputTokens: Int = 0
+    val outputTokens: Int = 0,
+    val availableModels: List<String> = emptyList(),
+    val isLoadingModels: Boolean = false,
+    val showModelSelector: Boolean = false
 )
 
 class ChatViewModel(
@@ -33,6 +38,7 @@ class ChatViewModel(
     private val providers: ProviderFactory
 ) : ViewModel() {
     private val conversationId = "default"
+    private var modelsJob: Job? = null
     private val initialProvider = preferences.activeProvider() ?: AiProviderType.CLAUDE
     private val _uiState = MutableStateFlow(
         ChatUiState(
@@ -62,6 +68,8 @@ class ChatViewModel(
             it.copy(
                 provider = provider,
                 model = preferences.selectedModel(provider),
+                availableModels = emptyList(),
+                showModelSelector = false,
                 error = null
             )
         }
@@ -70,7 +78,44 @@ class ChatViewModel(
     fun selectModel(model: String) {
         val provider = _uiState.value.provider
         preferences.setSelectedModel(provider, model)
-        _uiState.update { it.copy(model = model) }
+        _uiState.update { it.copy(model = model, showModelSelector = false) }
+    }
+
+    fun toggleModelSelector() {
+        val open = !_uiState.value.showModelSelector
+        _uiState.update { it.copy(showModelSelector = open) }
+        if (open) loadModels()
+    }
+
+    private fun loadModels() {
+        val provider = _uiState.value.provider
+        val key = preferences.getApiKey(provider)
+        if (key.isNullOrBlank()) {
+            _uiState.update {
+                it.copy(
+                    availableModels = emptyList(),
+                    showModelSelector = false,
+                    error = "Adicione uma API key para ${provider.label} em Configurações."
+                )
+            }
+            return
+        }
+        modelsJob?.cancel()
+        _uiState.update { it.copy(isLoadingModels = true, availableModels = emptyList()) }
+        modelsJob = viewModelScope.launch {
+            try {
+                val models = providers.listModels(provider, key)
+                _uiState.update { if (it.provider == provider) it.copy(availableModels = models) else it }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _uiState.update {
+                    it.copy(error = "Erro ao carregar modelos: ${error.message}", showModelSelector = false)
+                }
+            } finally {
+                _uiState.update { it.copy(isLoadingModels = false) }
+            }
+        }
     }
 
     fun sendMessage(text: String) {
@@ -96,7 +141,9 @@ class ChatViewModel(
                 val response = providers.create(providerType).sendMessage(
                     history + ProviderMessage("user", content),
                     key,
-                    model
+                    model,
+                    preferences.getTemperature(),
+                    preferences.getMaxTokens()
                 )
                 messages.insert(
                     ChatMessage(

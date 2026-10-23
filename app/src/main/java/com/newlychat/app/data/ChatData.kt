@@ -12,6 +12,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.newlychat.app.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "messages")
@@ -75,5 +76,30 @@ class SecurePreferences(context: Context) {
 
     fun setSelectedModel(provider: AiProviderType, model: String) {
         preferences.edit().putString("model_${provider.name}", model).apply()
+    }
+
+    fun getThemeMode(): ThemeMode =
+        runCatching { ThemeMode.valueOf(preferences.getString("theme_mode", null).orEmpty()) }
+            .getOrDefault(ThemeMode.SYSTEM)
+
+    fun setThemeMode(mode: ThemeMode) {
+        preferences.edit().putString("theme_mode", mode.name).apply()
+    }
+
+    fun getTemperature(): Double = preferences.getFloat("temperature", DEFAULT_TEMPERATURE.toFloat()).toDouble()
+
+    fun setTemperature(value: Double) {
+        preferences.edit().putFloat("temperature", value.toFloat()).apply()
+    }
+
+    fun getMaxTokens(): Int = preferences.getInt("max_tokens", DEFAULT_MAX_TOKENS)
+
+    fun setMaxTokens(value: Int) {
+        preferences.edit().putInt("max_tokens", value).apply()
+    }
+
+    companion object {
+        const val DEFAULT_TEMPERATURE = 1.0
+        const val DEFAULT_MAX_TOKENS = 2048
     }
 }

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.newlychat.app.data.AiProviderType
 import com.newlychat.app.data.ProviderFactory
 import com.newlychat.app.data.SecurePreferences
+import com.newlychat.app.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,7 +18,10 @@ data class SettingsUiState(
     val availableModels: Map<AiProviderType, List<String>> = emptyMap(),
     val selectedModels: Map<AiProviderType, String> = emptyMap(),
     val loadingModels: Set<AiProviderType> = emptySet(),
-    val modelErrors: Map<AiProviderType, String> = emptyMap()
+    val modelErrors: Map<AiProviderType, String> = emptyMap(),
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val temperature: Double = SecurePreferences.DEFAULT_TEMPERATURE,
+    val maxTokens: Int = SecurePreferences.DEFAULT_MAX_TOKENS
 )
 
 class SettingsViewModel(
@@ -27,10 +31,30 @@ class SettingsViewModel(
     private val _uiState = MutableStateFlow(
         SettingsUiState(
             configuredProviders = loadConfiguredProviders(),
-            selectedModels = AiProviderType.values().associateWith(preferences::selectedModel)
+            selectedModels = AiProviderType.values().associateWith(preferences::selectedModel),
+            themeMode = preferences.getThemeMode(),
+            temperature = preferences.getTemperature(),
+            maxTokens = preferences.getMaxTokens()
         )
     )
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+
+    fun setThemeMode(mode: ThemeMode) {
+        preferences.setThemeMode(mode)
+        _uiState.update { it.copy(themeMode = mode) }
+    }
+
+    fun setTemperature(value: Double) {
+        val clamped = value.coerceIn(0.0, 2.0)
+        preferences.setTemperature(clamped)
+        _uiState.update { it.copy(temperature = clamped) }
+    }
+
+    fun setMaxTokens(value: Int) {
+        if (value !in 1..10000) return
+        preferences.setMaxTokens(value)
+        _uiState.update { it.copy(maxTokens = value) }
+    }
 
     fun updateApiKey(provider: AiProviderType, apiKey: String) {
         _uiState.update { state -> state.copy(apiKeys = state.apiKeys + (provider to apiKey)) }

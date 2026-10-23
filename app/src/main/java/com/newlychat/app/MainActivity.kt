@@ -4,7 +4,11 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +21,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.Divider
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +41,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.newlychat.app.ui.chat.MessageContent
+import com.newlychat.app.ui.theme.NewlyChatTheme
+import com.newlychat.app.ui.theme.ThemeMode
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -65,8 +78,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             val chatViewModel: ChatViewModel = viewModel(factory = factory)
             val settingsViewModel: SettingsViewModel = viewModel(factory = factory)
-            MaterialTheme {
-                ChatScreen(chatViewModel, settingsViewModel)
+            val settingsState by settingsViewModel.uiState.collectAsState()
+            NewlyChatTheme(themeMode = settingsState.themeMode) {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    ChatScreen(chatViewModel, settingsViewModel)
+                }
             }
         }
     }
@@ -95,9 +111,19 @@ private fun ChatScreen(viewModel: ChatViewModel, settingsViewModel: SettingsView
             topBar = {
                 TopAppBar(
                     title = {
-                        Column {
-                            Text(state.provider.label)
-                            Text(state.model, style = MaterialTheme.typography.labelSmall)
+                        Row(
+                            modifier = Modifier.clickable { viewModel.toggleModelSelector() }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(state.provider.label, fontWeight = FontWeight.Bold)
+                                Text(
+                                    state.model,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Text(" ▾", color = MaterialTheme.colorScheme.primary)
                         }
                     },
                     actions = {
@@ -121,6 +147,15 @@ private fun ChatScreen(viewModel: ChatViewModel, settingsViewModel: SettingsView
                 )
             }
         ) { padding ->
+            if (state.showModelSelector) {
+                ModelSelectorBottomSheet(
+                    models = state.availableModels,
+                    selectedModel = state.model,
+                    isLoading = state.isLoadingModels,
+                    onModelSelected = viewModel::selectModel,
+                    onDismiss = viewModel::toggleModelSelector
+                )
+            }
             Column(
                 modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -171,6 +206,57 @@ private fun ChatScreen(viewModel: ChatViewModel, settingsViewModel: SettingsView
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelSelectorBottomSheet(
+    models: List<String>,
+    selectedModel: String,
+    isLoading: Boolean,
+    onModelSelected: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "Selecionar Modelo",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+        if (isLoading) {
+            Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp).padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(models) { model ->
+                    val selected = model == selectedModel
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onModelSelected(model) },
+                        color = if (selected) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surface
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                model,
+                                modifier = Modifier.weight(1f),
+                                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                                else MaterialTheme.colorScheme.onSurface
+                            )
+                            if (selected) Text("✓", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun MessageBubble(message: ChatMessage) {
     val userMessage = message.role == "user"
@@ -185,7 +271,11 @@ private fun MessageBubble(message: ChatMessage) {
             modifier = Modifier.fillMaxWidth(0.88f)
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text(message.content)
+                MessageContent(
+                    message.content,
+                    color = if (userMessage) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 if (!userMessage) {
                     Text(
                         "${message.provider} · ${message.model}",
@@ -228,6 +318,17 @@ private fun SettingsScreen(
                 Text(
                     "As chaves são armazenadas criptografadas neste dispositivo.",
                     style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            item {
+                AppearanceCard(uiState.themeMode, viewModel::setThemeMode)
+            }
+            item {
+                GeneralSettingsCards(
+                    temperature = uiState.temperature,
+                    maxTokens = uiState.maxTokens,
+                    onTemperatureChange = viewModel::setTemperature,
+                    onMaxTokensChange = viewModel::setMaxTokens
                 )
             }
             items(AiProviderType.values()) { provider ->
@@ -352,6 +453,97 @@ private fun ProviderCard(
                 modelError?.let { error ->
                     Text(error, color = MaterialTheme.colorScheme.error)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppearanceCard(themeMode: ThemeMode, onThemeMode: (ThemeMode) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Tema", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        themeMode.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(if (expanded) "▴" else "▾")
+            }
+            if (expanded) {
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
+                ThemeMode.values().forEach { mode ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .clickable { onThemeMode(mode); expanded = false }
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(mode.label)
+                        if (mode == themeMode) Text("✓", color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GeneralSettingsCards(
+    temperature: Double,
+    maxTokens: Int,
+    onTemperatureChange: (Double) -> Unit,
+    onMaxTokensChange: (Int) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Temperatura (Criatividade)", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Quanto maior, mais criativo. Quanto menor, mais focado.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Slider(
+                        value = temperature.toFloat(),
+                        onValueChange = { onTemperatureChange(it.toDouble()) },
+                        valueRange = 0f..2f,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(String.format(java.util.Locale.US, "%.2f", temperature))
+                }
+            }
+        }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Máximo de Tokens", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Limite de tokens gerados por resposta (1–10000)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                var text by remember(maxTokens) { mutableStateOf(maxTokens.toString()) }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { input ->
+                        text = input.filter(Char::isDigit).take(5)
+                        text.toIntOrNull()?.let(onMaxTokensChange)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    suffix = { Text("tokens") }
+                )
             }
         }
     }
